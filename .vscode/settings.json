@@ -1,0 +1,8 @@
+{
+  "C_Cpp.formatting": "Disabled",
+  "C_Cpp.default.systemIncludePath": [
+    "/usr/src/linux-headers-5.4.0-42/config/linux-headers/include",
+    "/usr/src/linux-headers-5.4.0-42/config/linux-headers/arch/x86/include"
+  ],
+  "C_Cpp.errorSquiggles": "Disabled"
+}
