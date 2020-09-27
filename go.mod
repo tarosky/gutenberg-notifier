@@ -1,4 +1,4 @@
-module github.com/tarosky/gutenberg_notifier
+module github.com/tarosky/gutenberg-notifier
 
 go 1.14
 

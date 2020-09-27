@@ -39,6 +39,7 @@ type Config struct {
 	InclExts      []string
 	InclMntPaths  []string
 	BpfDebug      uint
+	Log           *zap.Logger
 }
 
 // SetModesFromString sets InclFModes field using string representation.
@@ -88,15 +89,6 @@ type eventCStruct struct {
 	Name    [cNameMax + 1]byte
 	FMode   uint32
 	Debug   uint32
-}
-
-func createLogger() *zap.Logger {
-	log, err := zap.NewDevelopment(zap.WithCaller(false))
-	if err != nil {
-		panic("failed to initialize logger")
-	}
-
-	return log
 }
 
 func configCommonTrace(m *bcc.Module) error {
@@ -660,16 +652,16 @@ func configTrace(m *bcc.Module, receiverChan chan []byte) *bcc.PerfMap {
 // for an open file.
 type FMode uint32
 
-type FModeTuple struct {
+type fModeTuple struct {
 	val   FMode // `fmode_t` is defined as `typedef unsigned __bitwise fmode_t;` in the kernel.
 	name  string
 	cName string
 }
 
 type fModeData struct {
-	nameMap map[string]FModeTuple
-	valMap  map[FMode]FModeTuple
-	modes   []FModeTuple
+	nameMap map[string]fModeTuple
+	valMap  map[FMode]fModeTuple
+	modes   []fModeTuple
 }
 
 // FMode for closing files.
@@ -688,7 +680,7 @@ const (
 )
 
 func newFModeSet() fModeData {
-	fModes := []FModeTuple{
+	fModes := []fModeTuple{
 		{FModeRead, "read", "FMODE_READ"},
 		{FModeWrite, "write", "FMODE_WRITE"},
 		{FModeLseek, "lseek", "FMODE_LSEEK"},
@@ -703,9 +695,9 @@ func newFModeSet() fModeData {
 	}
 
 	s := fModeData{
-		nameMap: make(map[string]FModeTuple, len(fModes)),
-		valMap:  make(map[FMode]FModeTuple, len(fModes)),
-		modes:   make([]FModeTuple, 0, len(fModes)),
+		nameMap: make(map[string]fModeTuple, len(fModes)),
+		valMap:  make(map[FMode]fModeTuple, len(fModes)),
+		modes:   make([]fModeTuple, 0, len(fModes)),
 	}
 
 	for _, m := range fModes {
@@ -717,8 +709,8 @@ func newFModeSet() fModeData {
 	return s
 }
 
-func (m *fModeData) decomposeBits(fMode FMode) []FModeTuple {
-	fModes := []FModeTuple{}
+func (m *fModeData) decomposeBits(fMode FMode) []fModeTuple {
+	fModes := []fModeTuple{}
 	for _, m := range m.modes {
 		if 0 < m.val&fMode {
 			fModes = append(fModes, m)
@@ -789,8 +781,8 @@ func newEvtTypeSet() evtTypeData {
 
 var evtTypeSet = newEvtTypeSet()
 
-func (m *fModeData) FlagsToFModes(flags FMode) []FModeTuple {
-	setFlags := make([]FModeTuple, 0, 8) // Typically 8 is enough.
+func (m *fModeData) flagsToFModes(flags FMode) []fModeTuple {
+	setFlags := make([]fModeTuple, 0, 8) // Typically 8 is enough.
 
 	for _, m := range m.modes {
 		if flags&m.val != 0 {
@@ -810,6 +802,18 @@ func fModeToString(mode FMode) string {
 	}
 
 	return strings.Join(s, ",")
+}
+
+// AllFModes returns all available fmodes as string values.
+func AllFModes() []string {
+	modes := fModeSet.flagsToFModes(^FMode(0))
+	s := make([]string, 0, len(modes))
+
+	for _, m := range modes {
+		s = append(s, m.name)
+	}
+
+	return s
 }
 
 func isASCII(s string) bool {
@@ -1002,6 +1006,7 @@ type Event struct {
 
 // Run starts compiling eBPF code and then notifying of file updates.
 func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
+	log = config.Log
 	m := bcc.NewModule(generateSource(config), []string{}, config.BpfDebug)
 	defer m.Close()
 

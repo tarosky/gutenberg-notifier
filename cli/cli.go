@@ -2,13 +2,25 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/iovisor/gobpf/bcc"
+	"github.com/tarosky/gutenberg-notifier/notify"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 )
+
+func createLogger() *zap.Logger {
+	log, err := zap.NewDevelopment(zap.WithCaller(false))
+	if err != nil {
+		panic("failed to initialize logger")
+	}
+
+	return log
+}
 
 func main() {
 	app := cli.NewApp()
@@ -26,8 +38,7 @@ func main() {
 			Name:    "incl-fmode",
 			Aliases: []string{"im"},
 			Value:   &cli.StringSlice{},
-			Usage: "File operation mode to be included. Possible values are: " + fModeToString(
-				^notify.FMode(0)) + ".",
+			Usage:   "File operation mode to be included. Possible values are: " + strings.Join(notify.AllFModes(), ", ") + ".",
 		},
 		&cli.StringSliceFlag{
 			Name:    "incl-fullname",
@@ -50,22 +61,23 @@ func main() {
 	}
 
 	app.Action = func(c *cli.Context) error {
-		log = createLogger()
+		log := createLogger()
 		defer log.Sync()
 
-		cfg := &Config{
+		cfg := &notify.Config{
 			ExclComms:     c.StringSlice("excl-comm"),
 			InclFullNames: c.StringSlice("incl-fullname"),
 			InclExts:      c.StringSlice("incl-ext"),
 			InclMntPaths:  c.StringSlice("incl-mntpath"),
 			BpfDebug:      bcc.DEBUG_SOURCE, // | bcc.DEBUG_PREPROCESSOR
+			Log:           log,
 		}
 
 		if err := cfg.SetModesFromString(c.StringSlice("incl-fmode")); err != nil {
 			log.Fatal("illegal incl-fmode parameter", zap.Error(err))
 		}
 
-		eventCh := make(chan *Event)
+		eventCh := make(chan *notify.Event)
 		ctx, cancel := context.WithCancel(context.Background())
 
 		sig := make(chan os.Signal)
@@ -83,7 +95,7 @@ func main() {
 			}
 		}()
 
-		Run(ctx, cfg, eventCh)
+		notify.Run(ctx, cfg, eventCh)
 
 		return nil
 	}
