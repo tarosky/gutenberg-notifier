@@ -1,36 +1,28 @@
-package main
+package notify
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
-	"os"
-	"os/signal"
 	"strings"
 	"unicode"
 	"unsafe"
 
-	bpf "github.com/iovisor/gobpf/bcc"
+	"github.com/iovisor/gobpf/bcc"
 	"github.com/rakyll/statik/fs"
+
+	// Load static assets
 	_ "github.com/tarosky/gutenberg-notifier/statik"
-	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 )
 
 //go:generate statik -src=c
 
-// EventType is an event type
-type EventType int32
-
 var (
 	log *zap.Logger
-)
-
-const (
-	eventArg EventType = iota
-	eventRet
 )
 
 const (
@@ -39,72 +31,32 @@ const (
 	cPathMax     = 4096
 )
 
-type config struct {
-	exclComms     []string
-	inclModes     []string
-	inclFullNames []string
-	inclExts      []string
-	inclMntPaths  []string
+// Config configures parameters to filter what to be notified.
+type Config struct {
+	ExclComms     []string
+	InclFModes    FMode
+	InclFullNames []string
+	InclExts      []string
+	InclMntPaths  []string
+	BpfDebug      uint
+	Log           *zap.Logger
 }
 
-func main() {
-	app := cli.NewApp()
-	app.Name = "notifier"
-	app.Usage = "notify NFS file changes"
+// SetModesFromString sets InclFModes field using string representation.
+func (c *Config) SetModesFromString(inclFModes []string) error {
+	fmode := FMode(0x0)
 
-	app.Flags = []cli.Flag{
-		&cli.StringSliceFlag{
-			Name:    "excl-comm",
-			Aliases: []string{"ec"},
-			Value:   &cli.StringSlice{},
-			Usage:   "Command name to be excluded",
-		},
-		&cli.StringSliceFlag{
-			Name:    "incl-mode",
-			Aliases: []string{"im"},
-			Value:   &cli.StringSlice{},
-			Usage: "File operation mode to be included. Possible values are: " + fModeToString(
-				^uint32(0)) + ".",
-		},
-		&cli.StringSliceFlag{
-			Name:    "incl-fullname",
-			Aliases: []string{"in"},
-			Value:   &cli.StringSlice{},
-			Usage:   "Full file name to be included.",
-		},
-		&cli.StringSliceFlag{
-			Name:    "incl-ext",
-			Aliases: []string{"ie"},
-			Value:   &cli.StringSlice{},
-			Usage:   "File with specified extension to be included. Include leading dot.",
-		},
-		&cli.StringSliceFlag{
-			Name:    "incl-mntpath",
-			Aliases: []string{"ir"},
-			Value:   &cli.StringSlice{},
-			Usage:   "Full path to the mount point where the file is located. Never include trailing slash.",
-		},
+	for _, m := range inclFModes {
+		m2, ok := fModeSet.nameMap[m]
+		if !ok {
+			return fmt.Errorf("contains unknown mode: %s", m)
+		}
+		fmode |= m2.val
 	}
 
-	app.Action = func(c *cli.Context) error {
-		log = createLogger()
-		defer log.Sync()
+	c.InclFModes = fmode
 
-		run(config{
-			exclComms:     c.StringSlice("excl-comm"),
-			inclModes:     c.StringSlice("incl-mode"),
-			inclFullNames: c.StringSlice("incl-fullname"),
-			inclExts:      c.StringSlice("incl-ext"),
-			inclMntPaths:  c.StringSlice("incl-mntpath"),
-		})
-
-		return nil
-	}
-
-	err := app.Run(os.Args)
-	if err != nil {
-		log.Fatal("failed to run app", zap.Error(err))
-	}
+	return nil
 }
 
 func unpackSource(name string) string {
@@ -139,20 +91,7 @@ type eventCStruct struct {
 	Debug   uint32
 }
 
-func createLogger() *zap.Logger {
-	log, err := zap.NewDevelopment(zap.WithCaller(false))
-	if err != nil {
-		panic("failed to initialize logger")
-	}
-
-	return log
-}
-
-const (
-	maxArgs = 20
-)
-
-func configCommonTrace(m *bpf.Module) error {
+func configCommonTrace(m *bcc.Module) error {
 	kprobeMnt, err := m.LoadKprobe("enter___mnt_want_write")
 	if err != nil {
 		return err
@@ -174,7 +113,7 @@ func configCommonTrace(m *bpf.Module) error {
 	return nil
 }
 
-func configCloseTrace(m *bpf.Module) error {
+func configCloseTrace(m *bcc.Module) error {
 	kprobe, err := m.LoadKprobe("enter___filp_close")
 	if err != nil {
 		return err
@@ -196,13 +135,13 @@ func configCloseTrace(m *bpf.Module) error {
 	return nil
 }
 
-func configUnlinkTrace(m *bpf.Module) error {
+func configUnlinkTrace(m *bcc.Module) error {
 	kprobeUnlink, err := m.LoadKprobe("enter___syscall___unlink")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("unlink"), kprobeUnlink, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("unlink"), kprobeUnlink, -1); err != nil {
 		return err
 	}
 
@@ -211,7 +150,7 @@ func configUnlinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("unlinkat"), kprobeUnlinkAt, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("unlinkat"), kprobeUnlinkAt, -1); err != nil {
 		return err
 	}
 
@@ -229,7 +168,7 @@ func configUnlinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("unlink"), kretprobeUnlink, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("unlink"), kretprobeUnlink, -1); err != nil {
 		return err
 	}
 
@@ -238,20 +177,20 @@ func configUnlinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("unlinkat"), kretprobeUnlinkAt, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("unlinkat"), kretprobeUnlinkAt, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configRenameTrace(m *bpf.Module) error {
+func configRenameTrace(m *bcc.Module) error {
 	kprobeRename, err := m.LoadKprobe("enter___syscall___rename")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("rename"), kprobeRename, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("rename"), kprobeRename, -1); err != nil {
 		return err
 	}
 
@@ -260,7 +199,7 @@ func configRenameTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("renameat"), kprobeRenameAt, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("renameat"), kprobeRenameAt, -1); err != nil {
 		return err
 	}
 
@@ -269,7 +208,7 @@ func configRenameTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("renameat2"), kprobeRenameAt2, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("renameat2"), kprobeRenameAt2, -1); err != nil {
 		return err
 	}
 
@@ -287,7 +226,7 @@ func configRenameTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("rename"), kretprobeRename, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("rename"), kretprobeRename, -1); err != nil {
 		return err
 	}
 
@@ -296,7 +235,7 @@ func configRenameTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("renameat"), kretprobeRenameAt, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("renameat"), kretprobeRenameAt, -1); err != nil {
 		return err
 	}
 
@@ -305,20 +244,20 @@ func configRenameTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("renameat2"), kretprobeRenameAt2, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("renameat2"), kretprobeRenameAt2, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configChmodTrace(m *bpf.Module) error {
+func configChmodTrace(m *bcc.Module) error {
 	kprobeChmod, err := m.LoadKprobe("enter___syscall___chmod")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("chmod"), kprobeChmod, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("chmod"), kprobeChmod, -1); err != nil {
 		return err
 	}
 
@@ -327,7 +266,7 @@ func configChmodTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("fchmod"), kprobeFChmod, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("fchmod"), kprobeFChmod, -1); err != nil {
 		return err
 	}
 
@@ -336,7 +275,7 @@ func configChmodTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("fchmodat"), kprobeFChmodAt, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("fchmodat"), kprobeFChmodAt, -1); err != nil {
 		return err
 	}
 
@@ -345,7 +284,7 @@ func configChmodTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("chmod"), kretprobeChmod, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("chmod"), kretprobeChmod, -1); err != nil {
 		return err
 	}
 
@@ -354,7 +293,7 @@ func configChmodTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("fchmod"), kretprobeFChmod, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("fchmod"), kretprobeFChmod, -1); err != nil {
 		return err
 	}
 
@@ -363,20 +302,20 @@ func configChmodTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("fchmodat"), kretprobeFChmodAt, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("fchmodat"), kretprobeFChmodAt, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configChownTrace(m *bpf.Module) error {
+func configChownTrace(m *bcc.Module) error {
 	kprobeChown, err := m.LoadKprobe("enter___syscall___chown")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("chown"), kprobeChown, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("chown"), kprobeChown, -1); err != nil {
 		return err
 	}
 
@@ -385,7 +324,7 @@ func configChownTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("fchown"), kprobeFChown, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("fchown"), kprobeFChown, -1); err != nil {
 		return err
 	}
 
@@ -394,7 +333,7 @@ func configChownTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("fchownat"), kprobeFChownAt, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("fchownat"), kprobeFChownAt, -1); err != nil {
 		return err
 	}
 
@@ -403,7 +342,7 @@ func configChownTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("lchown"), kprobeLChown, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("lchown"), kprobeLChown, -1); err != nil {
 		return err
 	}
 
@@ -412,7 +351,7 @@ func configChownTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("chown"), kretprobeChown, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("chown"), kretprobeChown, -1); err != nil {
 		return err
 	}
 
@@ -421,7 +360,7 @@ func configChownTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("fchown"), kretprobeFChown, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("fchown"), kretprobeFChown, -1); err != nil {
 		return err
 	}
 
@@ -430,7 +369,7 @@ func configChownTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("fchownat"), kretprobeFChownAt, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("fchownat"), kretprobeFChownAt, -1); err != nil {
 		return err
 	}
 
@@ -439,46 +378,46 @@ func configChownTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("lchown"), kretprobeLChown, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("lchown"), kretprobeLChown, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configSyncTrace(m *bpf.Module) error {
+func configSyncTrace(m *bcc.Module) error {
 	kretprobe, err := m.LoadKprobe("return___syscall___sync")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("sync"), kretprobe, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("sync"), kretprobe, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configSyncFSTrace(m *bpf.Module) error {
+func configSyncFSTrace(m *bcc.Module) error {
 	kretprobe, err := m.LoadKprobe("return___syscall___syncfs")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("syncfs"), kretprobe, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("syncfs"), kretprobe, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configFSyncTrace(m *bpf.Module) error {
+func configFSyncTrace(m *bcc.Module) error {
 	kprobeFSync, err := m.LoadKprobe("enter___syscall___fsync")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("fsync"), kprobeFSync, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("fsync"), kprobeFSync, -1); err != nil {
 		return err
 	}
 
@@ -487,7 +426,7 @@ func configFSyncTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("fdatasync"), kprobeFDataSync, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("fdatasync"), kprobeFDataSync, -1); err != nil {
 		return err
 	}
 
@@ -505,7 +444,7 @@ func configFSyncTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("fsync"), kretprobeFSync, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("fsync"), kretprobeFSync, -1); err != nil {
 		return err
 	}
 
@@ -514,20 +453,20 @@ func configFSyncTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("fdatasync"), kretprobeFDataSync, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("fdatasync"), kretprobeFDataSync, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configTruncateTrace(m *bpf.Module) error {
+func configTruncateTrace(m *bcc.Module) error {
 	kprobeTruncate, err := m.LoadKprobe("enter___syscall___truncate")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("truncate"), kprobeTruncate, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("truncate"), kprobeTruncate, -1); err != nil {
 		return err
 	}
 
@@ -545,20 +484,20 @@ func configTruncateTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("truncate"), kretprobeTruncate, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("truncate"), kretprobeTruncate, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configLinkTrace(m *bpf.Module) error {
+func configLinkTrace(m *bcc.Module) error {
 	kprobeLink, err := m.LoadKprobe("enter___syscall___link")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("link"), kprobeLink, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("link"), kprobeLink, -1); err != nil {
 		return err
 	}
 
@@ -567,7 +506,7 @@ func configLinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("linkat"), kprobeLinkAt, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("linkat"), kprobeLinkAt, -1); err != nil {
 		return err
 	}
 
@@ -585,7 +524,7 @@ func configLinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("link"), kretprobeLink, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("link"), kretprobeLink, -1); err != nil {
 		return err
 	}
 
@@ -594,20 +533,20 @@ func configLinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("linkat"), kretprobeLinkAt, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("linkat"), kretprobeLinkAt, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configSymLinkTrace(m *bpf.Module) error {
+func configSymLinkTrace(m *bcc.Module) error {
 	kprobeSymLink, err := m.LoadKprobe("enter___syscall___symlink")
 	if err != nil {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("symlink"), kprobeSymLink, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("symlink"), kprobeSymLink, -1); err != nil {
 		return err
 	}
 
@@ -616,7 +555,7 @@ func configSymLinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKprobe(bpf.GetSyscallFnName("symlinkat"), kprobeSymLinkAt, -1); err != nil {
+	if err := m.AttachKprobe(bcc.GetSyscallFnName("symlinkat"), kprobeSymLinkAt, -1); err != nil {
 		return err
 	}
 
@@ -634,7 +573,7 @@ func configSymLinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("symlink"), kretprobeSymLink, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("symlink"), kretprobeSymLink, -1); err != nil {
 		return err
 	}
 
@@ -643,14 +582,14 @@ func configSymLinkTrace(m *bpf.Module) error {
 		return err
 	}
 
-	if err := m.AttachKretprobe(bpf.GetSyscallFnName("symlinkat"), kretprobeSymLinkAt, -1); err != nil {
+	if err := m.AttachKretprobe(bcc.GetSyscallFnName("symlinkat"), kretprobeSymLinkAt, -1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func configTrace(m *bpf.Module, receiverChan chan []byte) *bpf.PerfMap {
+func configTrace(m *bcc.Module, receiverChan chan []byte) *bcc.PerfMap {
 	if err := configCommonTrace(m); err != nil {
 		log.Fatal("failed to config common trace", zap.Error(err))
 	}
@@ -699,9 +638,9 @@ func configTrace(m *bpf.Module, receiverChan chan []byte) *bpf.PerfMap {
 		log.Fatal("failed to config SYMLINK trace", zap.Error(err))
 	}
 
-	table := bpf.NewTable(m.TableId("events"), m)
+	table := bcc.NewTable(m.TableId("events"), m)
 
-	perfMap, err := bpf.InitPerfMap(table, receiverChan, nil)
+	perfMap, err := bcc.InitPerfMap(table, receiverChan, nil)
 	if err != nil {
 		log.Fatal("Failed to init perf map", zap.Error(err))
 	}
@@ -709,37 +648,56 @@ func configTrace(m *bpf.Module, receiverChan chan []byte) *bpf.PerfMap {
 	return perfMap
 }
 
-type fMode struct {
-	val   uint32 // `fmode_t` is defined as `typedef unsigned __bitwise fmode_t;` in the kernel.
+// FMode corresponds to Linux kernel's f_mode, which tells what operation can perform
+// for an open file.
+type FMode uint32
+
+type fModeTuple struct {
+	val   FMode // `fmode_t` is defined as `typedef unsigned __bitwise fmode_t;` in the kernel.
 	name  string
 	cName string
 }
 
 type fModeData struct {
-	nameMap map[string]fMode
-	valMap  map[uint32]fMode
-	modes   []fMode
+	nameMap map[string]fModeTuple
+	valMap  map[FMode]fModeTuple
+	modes   []fModeTuple
 }
 
+// FMode for closing files.
+const (
+	FModeRead FMode = 0x1 << iota
+	FModeWrite
+	FModeLseek
+	FModePread
+	FModePwrite
+	FModeExec
+	FModeNdelay
+	FModeExcl
+	FModeWriteIoctl
+	FMode32bithash
+	FMode64bithash
+)
+
 func newFModeSet() fModeData {
-	fModes := []fMode{
-		{0x1, "read", "FMODE_READ"},
-		{0x2, "write", "FMODE_WRITE"},
-		{0x4, "lseek", "FMODE_LSEEK"},
-		{0x8, "pread", "FMODE_PREAD"},
-		{0x10, "pwrite", "FMODE_PWRITE"},
-		{0x20, "exec", "FMODE_EXEC"},
-		{0x40, "ndelay", "FMODE_NDELAY"},
-		{0x80, "excl", "FMODE_EXCL"},
-		{0x100, "write_ioctl", "FMODE_WRITE_IOCTL"},
-		{0x200, "32bithash", "FMODE_32BITHASH"},
-		{0x400, "64bithash", "FMODE_64BITHASH"},
+	fModes := []fModeTuple{
+		{FModeRead, "read", "FMODE_READ"},
+		{FModeWrite, "write", "FMODE_WRITE"},
+		{FModeLseek, "lseek", "FMODE_LSEEK"},
+		{FModePread, "pread", "FMODE_PREAD"},
+		{FModePwrite, "pwrite", "FMODE_PWRITE"},
+		{FModeExec, "exec", "FMODE_EXEC"},
+		{FModeNdelay, "ndelay", "FMODE_NDELAY"},
+		{FModeExcl, "excl", "FMODE_EXCL"},
+		{FModeWriteIoctl, "write_ioctl", "FMODE_WRITE_IOCTL"},
+		{FMode32bithash, "32bithash", "FMODE_32BITHASH"},
+		{FMode64bithash, "64bithash", "FMODE_64BITHASH"},
 	}
 
 	s := fModeData{
-		nameMap: make(map[string]fMode, len(fModes)),
-		valMap:  make(map[uint32]fMode, len(fModes)),
-		modes:   make([]fMode, 0, len(fModes)),
+		nameMap: make(map[string]fModeTuple, len(fModes)),
+		valMap:  make(map[FMode]fModeTuple, len(fModes)),
+		modes:   make([]fModeTuple, 0, len(fModes)),
 	}
 
 	for _, m := range fModes {
@@ -751,36 +709,65 @@ func newFModeSet() fModeData {
 	return s
 }
 
+func (m *fModeData) decomposeBits(fMode FMode) []fModeTuple {
+	fModes := []fModeTuple{}
+	for _, m := range m.modes {
+		if 0 < m.val&fMode {
+			fModes = append(fModes, m)
+		}
+	}
+	return fModes
+}
+
 var fModeSet = newFModeSet()
 
 type evtType struct {
-	val  uint64
+	val  EventType
 	name string
 }
 
 type evtTypeData struct {
-	valMap   map[uint64]evtType
+	valMap   map[EventType]evtType
 	evtTypes []evtType
 }
 
+// EventType is an event type eBPF notfies.
+type EventType uint64
+
+// Event type to be notified.
+const (
+	EventTypeClose EventType = 0x1 << iota
+	EventTypeUnlink
+	EventTypeRenameSrc
+	EventTypeRenameDest
+	EventTypeChmod
+	EventTypeChown
+	EventTypeSync
+	EventTypeSyncfs
+	EventTypeFsync
+	EventTypeTruncate
+	EventTypeLink
+	EventTypeSymlink
+)
+
 func newEvtTypeSet() evtTypeData {
 	evtTypes := []evtType{
-		{0x1, "close"},
-		{0x2, "unlink"},
-		{0x4, "rename_src"},
-		{0x8, "rename_dest"},
-		{0x10, "chmod"},
-		{0x20, "chown"},
-		{0x40, "sync"},
-		{0x80, "syncfs"},
-		{0x100, "fsync"},
-		{0x200, "truncate"},
-		{0x400, "link"},
-		{0x800, "symlink"},
+		{EventTypeClose, "close"},
+		{EventTypeUnlink, "unlink"},
+		{EventTypeRenameSrc, "rename_src"},
+		{EventTypeRenameDest, "rename_dest"},
+		{EventTypeChmod, "chmod"},
+		{EventTypeChown, "chown"},
+		{EventTypeSync, "sync"},
+		{EventTypeSyncfs, "syncfs"},
+		{EventTypeFsync, "fsync"},
+		{EventTypeTruncate, "truncate"},
+		{EventTypeLink, "link"},
+		{EventTypeSymlink, "symlink"},
 	}
 
 	s := evtTypeData{
-		valMap:   make(map[uint64]evtType, len(evtTypes)),
+		valMap:   make(map[EventType]evtType, len(evtTypes)),
 		evtTypes: make([]evtType, 0, len(evtTypes)),
 	}
 
@@ -794,10 +781,10 @@ func newEvtTypeSet() evtTypeData {
 
 var evtTypeSet = newEvtTypeSet()
 
-func (s fModeData) flagsToFModes(flags uint32) []fMode {
-	setFlags := make([]fMode, 0, 8) // Typically 8 is enough.
+func (m *fModeData) flagsToFModes(flags FMode) []fModeTuple {
+	setFlags := make([]fModeTuple, 0, 8) // Typically 8 is enough.
 
-	for _, m := range s.modes {
+	for _, m := range m.modes {
 		if flags&m.val != 0 {
 			setFlags = append(setFlags, m)
 		}
@@ -806,7 +793,7 @@ func (s fModeData) flagsToFModes(flags uint32) []fMode {
 	return setFlags
 }
 
-func fModeToString(mode uint32) string {
+func fModeToString(mode FMode) string {
 	modes := fModeSet.flagsToFModes(mode)
 	s := make([]string, 0, len(modes))
 
@@ -815,6 +802,18 @@ func fModeToString(mode uint32) string {
 	}
 
 	return strings.Join(s, ",")
+}
+
+// AllFModes returns all available fmodes as string values.
+func AllFModes() []string {
+	modes := fModeSet.flagsToFModes(^FMode(0))
+	s := make([]string, 0, len(modes))
+
+	for _, m := range modes {
+		s = append(s, m.name)
+	}
+
+	return s
 }
 
 func isASCII(s string) bool {
@@ -857,23 +856,13 @@ func generateExclCommsCode(commStrs []string) string {
 	return strings.Join(strs, ",\n")
 }
 
-func validateInclModes(inclModes []string) error {
-	for _, m := range inclModes {
-		if _, ok := fModeSet.nameMap[m]; !ok {
-			return fmt.Errorf("contains unknown mode: %s", m)
-		}
-	}
-
-	return nil
-}
-
-func generateInclModesCode(inclModes []string) string {
+func generateInclModesCode(inclFModes FMode) string {
 	buf := bytes.Buffer{}
-	for _, m := range inclModes {
+	for _, m := range fModeSet.decomposeBits(inclFModes) {
 		if _, err := buf.WriteString(" | "); err != nil {
 			log.Panic("unknown error", zap.Error(err))
 		}
-		if _, err := buf.WriteString(fModeSet.nameMap[m].cName); err != nil {
+		if _, err := buf.WriteString(m.cName); err != nil {
 			log.Panic("unknown error", zap.Error(err))
 		}
 	}
@@ -969,31 +958,28 @@ func generateInclMntPaths(inclMntPaths []string) string {
 	return strings.Join(strs, ",\n")
 }
 
-func generateSource(config config) string {
-	if err := validateExclComms(config.exclComms); err != nil {
+func generateSource(config *Config) string {
+	if err := validateExclComms(config.ExclComms); err != nil {
 		log.Fatal("illegal excl-comms parameter", zap.Error(err))
 	}
-	exclCommsCode := generateExclCommsCode(config.exclComms)
+	exclCommsCode := generateExclCommsCode(config.ExclComms)
 
-	if err := validateInclModes(config.inclModes); err != nil {
-		log.Fatal("illegal incl-modes parameter", zap.Error(err))
-	}
-	inclModesCode := generateInclModesCode(config.inclModes)
+	inclModesCode := generateInclModesCode(config.InclFModes)
 
-	if err := validateInclFullNames(config.inclFullNames); err != nil {
+	if err := validateInclFullNames(config.InclFullNames); err != nil {
 		log.Fatal("illegal incl-fullname parameter", zap.Error(err))
 	}
-	inclFullNamesCode := generateInclFullNames(config.inclFullNames)
+	inclFullNamesCode := generateInclFullNames(config.InclFullNames)
 
-	if err := validateInclExts(config.inclExts); err != nil {
+	if err := validateInclExts(config.InclExts); err != nil {
 		log.Fatal("illegal incl-ext parameter", zap.Error(err))
 	}
-	inclExtsCode := generateInclExts(config.inclExts)
+	inclExtsCode := generateInclExts(config.InclExts)
 
-	if err := validateInclMntPaths(config.inclMntPaths); err != nil {
+	if err := validateInclMntPaths(config.InclMntPaths); err != nil {
 		log.Fatal("illegal incl-mntpath parameter", zap.Error(err))
 	}
-	inclMntPathsCode := generateInclMntPaths(config.inclMntPaths)
+	inclMntPathsCode := generateInclMntPaths(config.InclMntPaths)
 
 	return strings.Replace(
 		strings.Replace(
@@ -1008,53 +994,70 @@ func generateSource(config config) string {
 		"/*INCL_MNTPATHS*/", inclMntPathsCode, -1)
 }
 
-func run(config config) {
-	// m := bpf.NewModule(
-	// 	generateSource(config), []string{}, bpf.DEBUG_PREPROCESSOR)
-	m := bpf.NewModule(
-		generateSource(config), []string{}, bpf.DEBUG_SOURCE)
+// Event tells the details of notification.
+type Event struct {
+	EvtType EventType
+	Pid     uint32
+	Comm    string
+	MntPath string
+	Name    string
+	FMode   FMode
+}
+
+// Run starts compiling eBPF code and then notifying of file updates.
+func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
+	log = config.Log
+	m := bcc.NewModule(generateSource(config), []string{}, config.BpfDebug)
 	defer m.Close()
 
 	channel := make(chan []byte, 8192)
 	perfMap := configTrace(m, channel)
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, os.Kill)
-
 	go func() {
 		for {
-			data := <-channel
+			select {
+			case <-ctx.Done():
+				close(eventCh)
+				return
+			case data := <-channel:
+				var cEvent eventCStruct
+				if err := binary.Read(bytes.NewBuffer(data), bcc.GetHostByteOrder(), &cEvent); err != nil {
+					fmt.Printf("failed to decode received data: %s\n", err)
+					continue
+				}
 
-			var event eventCStruct
-			if err := binary.Read(bytes.NewBuffer(data), bpf.GetHostByteOrder(), &event); err != nil {
-				fmt.Printf("failed to decode received data: %s\n", err)
-				continue
+				evtType := evtTypeSet.valMap[EventType(cEvent.EvtType)]
+				pid := uint32(cEvent.Pid)
+				debug := cEvent.Debug
+				comm := cPointerToString(unsafe.Pointer(&cEvent.Comm))
+				name := cPointerToString(unsafe.Pointer(&cEvent.Name))
+				mntPath := cPointerToString(unsafe.Pointer(&cEvent.MntPath))
+				fMode := FMode(cEvent.FMode)
+
+				log.Debug(
+					"event",
+					zap.String("evttype", evtType.name),
+					zap.Uint32("pid", pid),
+					zap.String("mntpath", mntPath),
+					zap.String("comm", comm),
+					zap.String("mode", fModeToString(fMode)),
+					zap.String("name", name),
+					zap.Uint32("debug", debug),
+				)
+
+				eventCh <- &Event{
+					EvtType: evtType.val,
+					Comm:    comm,
+					FMode:   fMode,
+					MntPath: mntPath,
+					Name:    name,
+					Pid:     pid,
+				}
 			}
-
-			evtType := evtTypeSet.valMap[event.EvtType]
-			pid := event.Pid
-			debug := event.Debug
-			comm := cPointerToString(unsafe.Pointer(&event.Comm))
-			name := cPointerToString(unsafe.Pointer(&event.Name))
-			mntPath := cPointerToString(unsafe.Pointer(&event.MntPath))
-			fMode := fModeToString(event.FMode)
-
-			log.Info(
-				"<-notify",
-				zap.String("evttype", evtType.name),
-				zap.Uint64("pid", pid),
-				zap.String("mntpath", mntPath),
-				zap.String("comm", comm),
-				zap.String("mode", fMode),
-				zap.String("name", name),
-				zap.Uint32("debug", debug),
-			)
 		}
 	}()
 
-	// return
-
 	perfMap.Start()
-	<-sig
+	<-ctx.Done()
 	perfMap.Stop()
 }
