@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"strings"
 
-	"github.com/iovisor/gobpf/bcc"
 	"github.com/tarosky/gutenberg-notifier/notify"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
@@ -58,6 +57,18 @@ func main() {
 			Value:   &cli.StringSlice{},
 			Usage:   "Full path to the mount point where the file is located. Never include trailing slash.",
 		},
+		&cli.IntFlag{
+			Name:    "max-mnt-depth",
+			Aliases: []string{"md"},
+			Value:   16,
+			Usage:   "Maximum depth to scan for getting absolute mount point path. Increasing this value too much could cause compilation failure.",
+		},
+		&cli.IntFlag{
+			Name:    "max-dir-depth",
+			Aliases: []string{"dd"},
+			Value:   32,
+			Usage:   "Maximum depth to scan for getting absolute file path. Increasing this value too much could cause compilation failure.",
+		},
 	}
 
 	app.Action = func(c *cli.Context) error {
@@ -69,8 +80,11 @@ func main() {
 			InclFullNames: c.StringSlice("incl-fullname"),
 			InclExts:      c.StringSlice("incl-ext"),
 			InclMntPaths:  c.StringSlice("incl-mntpath"),
-			BpfDebug:      bcc.DEBUG_SOURCE, // | bcc.DEBUG_PREPROCESSOR
-			Log:           log,
+			MaxMntDepth:   c.Int("max-mnt-depth"),
+			MaxDirDepth:   c.Int("max-dir-depth"),
+			BpfDebug:      0,
+			// BpfDebug:      bcc.DEBUG_SOURCE, // | bcc.DEBUG_PREPROCESSOR
+			Log: log,
 		}
 
 		if err := cfg.SetModesFromString(c.StringSlice("incl-fmode")); err != nil {

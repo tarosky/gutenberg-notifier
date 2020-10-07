@@ -4,7 +4,8 @@
 #include <uapi/linux/ptrace.h>
 
 // Limit directory depth to ascend to pass verifier
-#define MAX_DIR_DEPTH 32
+#define MAX_MNT_DEPTH /*MAX_MNT_DEPTH*/
+#define MAX_DIR_DEPTH /*MAX_DIR_DEPTH*/
 
 // Event types these probes emit
 #define GNEVT_CLOSE ((u64)0x1)
@@ -37,6 +38,7 @@ struct data_t {
   // Verifier doesn't care if a pointer goes out of a struct member
   // as long as it is contained in the struct.
   //
+  char path[PATH_MAX];
   char mntpath[PATH_MAX];
   char name[NAME_MAX + 1];
 
@@ -251,15 +253,13 @@ static __always_inline int is_root(struct dentry *d) {
 static __always_inline void copy_mount_path(char *mnt_path, struct vfsmount *mnt) {
   struct mount *mnt_start = enclosing_mount(mnt);
 
-  u32 lens[MAX_DIR_DEPTH];
-  memset(lens, 0x0, sizeof(lens));
   u32 pos = 0;
 
   {
     struct mount *mnt = mnt_start;
     struct dentry *d = mnt->mnt_mountpoint;
 #pragma unroll
-    for (int i = 0; i < MAX_DIR_DEPTH; i++) {
+    for (int i = 0; i < MAX_MNT_DEPTH; i++) {
       if (is_root(d)) {
         if (mnt_has_parent(mnt)) {
           mnt = mnt->mnt_parent;
@@ -288,7 +288,7 @@ static __always_inline void copy_mount_path(char *mnt_path, struct vfsmount *mnt
     struct mount *mnt = mnt_start;
     struct dentry *d = mnt->mnt_mountpoint;
 #pragma unroll
-    for (int i = 0; i < MAX_DIR_DEPTH; i++) {
+    for (int i = 0; i < MAX_MNT_DEPTH; i++) {
       if (is_root(d)) {
         if (mnt_has_parent(mnt)) {
           mnt = mnt->mnt_parent;
@@ -312,16 +312,77 @@ static __always_inline void copy_mount_path(char *mnt_path, struct vfsmount *mnt
   }
 }
 
+/**
+ * `pos & (PATH_MAX - 1)` is a technique to tell the upper bound to the verifier.
+ * This works only if PATH_MAX is power of 2.
+ */
+static __always_inline void copy_file_path(char *path, struct dentry *dentry) {
+  u32 pos = 0;
+
+  {
+    struct dentry *d = dentry;
+#pragma unroll
+    for (int i = 0; i < MAX_DIR_DEPTH; i++) {
+      // Avoid the following warning by moving is_root at the beginning.
+      //
+      // warning: /virtual/main.c:357:5: loop not unrolled:
+      // the optimizer was unable to perform the requested transformation;
+      // the transformation might be disabled or specified as part of an
+      // unsupported transformation ordering
+      if (is_root(d)) {
+        break;
+      }
+      u32 len;
+      bpf_probe_read_kernel(&len, sizeof(u32), &d->d_name.len);
+      pos += len + 1;
+
+      d = d->d_parent;
+    }
+  }
+
+  {
+    path[pos & (PATH_MAX - 1)] = '\0';
+
+    struct dentry *d = dentry;
+#pragma unroll
+    for (int i = 0; i < MAX_DIR_DEPTH; i++) {
+      // Avoid the following warning by moving is_root at the beginning.
+      //
+      // warning: /virtual/main.c:357:5: loop not unrolled:
+      // the optimizer was unable to perform the requested transformation;
+      // the transformation might be disabled or specified as part of an
+      // unsupported transformation ordering
+      if (is_root(d)) {
+        break;
+      }
+
+      u32 len;
+      bpf_probe_read_kernel(&len, sizeof(u32), &d->d_name.len);
+
+      pos -= len;
+      bpf_probe_read_kernel(&path[pos & (PATH_MAX - 1)], len & NAME_MAX, d->d_name.name);
+      pos--;
+      path[pos & (PATH_MAX - 1)] = '/';
+
+      d = d->d_parent;
+    }
+  }
+}
+
 static __always_inline void copy_file_name(char *name, struct dentry *dentry) {
   u32 name_len;
   bpf_probe_read_kernel(&name_len, sizeof(name_len), &dentry->d_name.len);
   u32 d_name_len = (NAME_MAX < name_len) ? NAME_MAX : name_len;
-  memset(name, 0x0, NAME_MAX + 1);
   bpf_probe_read_kernel(name, d_name_len, dentry->d_name.name);
+  name[d_name_len] = '\0';
 }
 
 static __always_inline void copy_mount_path_from_file(char *mnt_path, struct file *filp) {
   copy_mount_path(mnt_path, filp->f_path.mnt);
+}
+
+static __always_inline void copy_file_path_from_file(char *path, struct file *filp) {
+  copy_file_path(path, filp->f_path.dentry);
 }
 
 static __always_inline void copy_file_name_from_file(char *name, struct file *filp) {
@@ -458,6 +519,10 @@ int enter___notify_change(struct pt_regs *ctx, struct dentry *dentry, struct iat
       return 0;
     }
 
+    // Copy full path
+    //
+    copy_file_path(data->path, dentry);
+
     if (!update_rally(ptg_id, 0x4)) {
       return 0;
     };
@@ -507,12 +572,16 @@ int enter___filp_close(struct pt_regs *ctx, struct file *filp, fl_owner_t id) {
     return 0;
   }
 
-  // Copy full path to the mount point
+  // Copy full path of the mount point
   //
   copy_mount_path_from_file(data->mntpath, filp);
   if (!is_incl_mntpath(data->mntpath)) {
     return 0;
   }
+
+  // Copy full path
+  //
+  copy_file_path_from_file(data->path, filp);
 
   // Copy pid
   //
@@ -612,6 +681,10 @@ int enter___vfs_unlink(struct pt_regs *ctx, struct inode *dir, struct dentry *de
   if (!is_incl_name(data->name)) {
     return 0;
   }
+
+  // Copy full path
+  //
+  copy_file_path(data->path, dentry);
 
   if (!update_rally(ptg_id, 0x4)) {
     return 0;
@@ -751,6 +824,11 @@ int enter___vfs_rename(struct pt_regs *ctx, struct inode *old_dir,
       return 0;
     }
   }
+
+  // Copy full path
+  //
+  copy_file_path(data_src->path, old_dentry);
+  copy_file_path(data_dest->path, new_dentry);
 
   if (!update_rally(ptg_id, 0x8)) {
     return 0;
@@ -1058,6 +1136,7 @@ int return___syscall___sync(struct pt_regs *ctx) {
   data->f_mode = 0;
   data->name[0] = '\0';
   data->mntpath[0] = '\0';
+  data->path[0] = '\0';
 
   data->debug = 0;
   events.perf_submit(ctx, data, sizeof(struct data_t));
@@ -1104,6 +1183,7 @@ int return___syscall___syncfs(struct pt_regs *ctx) {
   data->f_mode = 0;
   data->name[0] = '\0';
   data->mntpath[0] = '\0';
+  data->path[0] = '\0';
 
   data->debug = 0;
   events.perf_submit(ctx, data, sizeof(struct data_t));
@@ -1176,12 +1256,16 @@ int enter___vfs_fsync_range(struct pt_regs *ctx, struct file *file, loff_t start
     return 0;
   }
 
-  // Copy full path to the mount point
+  // Copy full path of the mount point
   //
   copy_mount_path_from_file(data->mntpath, file);
   if (!is_incl_mntpath(data->mntpath)) {
     return 0;
   }
+
+  // Copy full path
+  //
+  copy_file_path_from_file(data->path, file);
 
   if (!update_rally(ptg_id, 0x2)) {
     return 0;
@@ -1288,6 +1372,10 @@ int enter___vfs_truncate(struct pt_regs *ctx, const struct path *path, loff_t le
   if (!is_incl_mntpath(data->mntpath)) {
     return 0;
   }
+
+  // Copy full path
+  //
+  copy_file_path(data->path, path->dentry);
 
   if (!update_rally(ptg_id, 0x2)) {
     return 0;
@@ -1396,6 +1484,10 @@ int enter___vfs_link(struct pt_regs *ctx, struct dentry *old_dentry, struct inod
   if (!is_incl_name(data->name)) {
     return 0;
   }
+
+  // Copy full path
+  //
+  copy_file_path(data->path, new_dentry);
 
   if (!update_rally(ptg_id, 0x4)) {
     return 0;
@@ -1511,6 +1603,10 @@ int enter___vfs_symlink(struct pt_regs *ctx, struct inode *dir, struct dentry *d
   copy_file_name(data->name, dentry);
   // Things a symlink points to can change between file and directory.
   // Checking file name at this time isn't meaningful.
+
+  // Copy full path
+  //
+  copy_file_path(data->path, dentry);
 
   if (!update_rally(ptg_id, 0x4)) {
     return 0;
