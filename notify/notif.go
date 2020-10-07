@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
+	"strconv"
 	"strings"
 	"unicode"
 	"unsafe"
@@ -38,6 +39,8 @@ type Config struct {
 	InclFullNames []string
 	InclExts      []string
 	InclMntPaths  []string
+	MaxMntDepth   int
+	MaxDirDepth   int
 	BpfDebug      uint
 	Log           *zap.Logger
 }
@@ -85,6 +88,7 @@ type eventCStruct struct {
 	EvtType uint64
 	Pid     uint64
 	Comm    [cTaskCommLen]byte
+	Path    [cPathMax]byte
 	MntPath [cPathMax]byte
 	Name    [cNameMax + 1]byte
 	FMode   uint32
@@ -986,12 +990,16 @@ func generateSource(config *Config) string {
 			strings.Replace(
 				strings.Replace(
 					strings.Replace(
-						source,
-						"/*EXCL_COMMS*/", exclCommsCode, -1),
-					"/*INCL_MODES*/", inclModesCode, -1),
-				"/*INCL_FULLNAMES*/", inclFullNamesCode, -1),
-			"/*INCL_EXTS*/", inclExtsCode, -1),
-		"/*INCL_MNTPATHS*/", inclMntPathsCode, -1)
+						strings.Replace(
+							strings.Replace(
+								source,
+								"/*EXCL_COMMS*/", exclCommsCode, -1),
+							"/*INCL_MODES*/", inclModesCode, -1),
+						"/*INCL_FULLNAMES*/", inclFullNamesCode, -1),
+					"/*INCL_EXTS*/", inclExtsCode, -1),
+				"/*INCL_MNTPATHS*/", inclMntPathsCode, -1),
+			"/*MAX_MNT_DEPTH*/", strconv.Itoa(config.MaxMntDepth), -1),
+		"/*MAX_DIR_DEPTH*/", strconv.Itoa(config.MaxDirDepth), -1)
 }
 
 // Event tells the details of notification.
@@ -1000,8 +1008,21 @@ type Event struct {
 	Pid     uint32
 	Comm    string
 	MntPath string
+	Path    string
 	Name    string
 	FMode   FMode
+}
+
+func absolutePath(path, mntPath string) string {
+	if path == "" {
+		return ""
+	}
+
+	if mntPath == "/" {
+		return path
+	}
+
+	return mntPath + path
 }
 
 // Run starts compiling eBPF code and then notifying of file updates.
@@ -1014,6 +1035,7 @@ func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
 	perfMap := configTrace(m, channel)
 
 	go func() {
+		log.Info("tracing started")
 		for {
 			select {
 			case <-ctx.Done():
@@ -1031,13 +1053,17 @@ func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
 				debug := cEvent.Debug
 				comm := cPointerToString(unsafe.Pointer(&cEvent.Comm))
 				name := cPointerToString(unsafe.Pointer(&cEvent.Name))
+				path := cPointerToString(unsafe.Pointer(&cEvent.Path))
 				mntPath := cPointerToString(unsafe.Pointer(&cEvent.MntPath))
 				fMode := FMode(cEvent.FMode)
+
+				absPath := absolutePath(path, mntPath)
 
 				log.Debug(
 					"event",
 					zap.String("evttype", evtType.name),
 					zap.Uint32("pid", pid),
+					zap.String("path", absPath),
 					zap.String("mntpath", mntPath),
 					zap.String("comm", comm),
 					zap.String("mode", fModeToString(fMode)),
