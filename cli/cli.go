@@ -69,6 +69,18 @@ func main() {
 			Value:   32,
 			Usage:   "Maximum depth to scan for getting absolute file path. Increasing this value too much could cause compilation failure.",
 		},
+		&cli.IntFlag{
+			Name:    "debug",
+			Aliases: []string{"d"},
+			Value:   0,
+			Usage:   "Enable debug output: bcc.DEBUG_SOURCE: 8, bcc.DEBUG_PREPROCESSOR: 4.",
+		},
+		&cli.BoolFlag{
+			Name:    "quit",
+			Aliases: []string{"q"},
+			Value:   false,
+			Usage:   "Quit without tracing. This is mainly for debugging.",
+		},
 	}
 
 	app.Action = func(c *cli.Context) error {
@@ -82,9 +94,9 @@ func main() {
 			InclMntPaths:  c.StringSlice("incl-mntpath"),
 			MaxMntDepth:   c.Int("max-mnt-depth"),
 			MaxDirDepth:   c.Int("max-dir-depth"),
-			BpfDebug:      0,
-			// BpfDebug:      bcc.DEBUG_SOURCE, // | bcc.DEBUG_PREPROCESSOR
-			Log: log,
+			BpfDebug:      c.Uint("debug"),
+			Quit:          c.Bool("quit"),
+			Log:           log,
 		}
 
 		if err := cfg.SetModesFromString(c.StringSlice("incl-fmode")); err != nil {
