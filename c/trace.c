@@ -373,8 +373,12 @@ static __always_inline void copy_file_name(char *name, struct dentry *dentry) {
   u32 name_len;
   bpf_probe_read_kernel(&name_len, sizeof(name_len), &dentry->d_name.len);
   u32 d_name_len = (NAME_MAX < name_len) ? NAME_MAX : name_len;
+  u64 *n = (u64 *)name;
+#pragma unroll
+  for (int i = 0; i < (NAME_MAX + 1) / 8; i++) {
+    n[i] = 0x0;
+  }
   bpf_probe_read_kernel(name, d_name_len, dentry->d_name.name);
-  name[d_name_len] = '\0';
 }
 
 static __always_inline void copy_mount_path_from_file(char *mnt_path, struct file *filp) {

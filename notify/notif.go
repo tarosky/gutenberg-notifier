@@ -42,6 +42,7 @@ type Config struct {
 	MaxMntDepth   int
 	MaxDirDepth   int
 	BpfDebug      uint
+	Quit          bool
 	Log           *zap.Logger
 }
 
@@ -1030,6 +1031,11 @@ func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
 	log = config.Log
 	m := bcc.NewModule(generateSource(config), []string{}, config.BpfDebug)
 	defer m.Close()
+
+	if config.Quit {
+		close(eventCh)
+		return
+	}
 
 	channel := make(chan []byte, 8192)
 	perfMap := configTrace(m, channel)
