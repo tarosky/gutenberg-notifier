@@ -596,58 +596,58 @@ func configSymLinkTrace(m *bcc.Module) error {
 
 func configTrace(m *bcc.Module, receiverChan chan []byte) *bcc.PerfMap {
 	if err := configCommonTrace(m); err != nil {
-		log.Fatal("failed to config common trace", zap.Error(err))
+		log.Panic("failed to config common trace", zap.Error(err))
 	}
 
 	if err := configCloseTrace(m); err != nil {
-		log.Fatal("failed to config CLOSE trace", zap.Error(err))
+		log.Panic("failed to config CLOSE trace", zap.Error(err))
 	}
 
 	if err := configUnlinkTrace(m); err != nil {
-		log.Fatal("failed to config UNLINK trace", zap.Error(err))
+		log.Panic("failed to config UNLINK trace", zap.Error(err))
 	}
 
 	if err := configRenameTrace(m); err != nil {
-		log.Fatal("failed to config RENAME trace", zap.Error(err))
+		log.Panic("failed to config RENAME trace", zap.Error(err))
 	}
 
 	if err := configChmodTrace(m); err != nil {
-		log.Fatal("failed to config CHMOD trace", zap.Error(err))
+		log.Panic("failed to config CHMOD trace", zap.Error(err))
 	}
 
 	if err := configChownTrace(m); err != nil {
-		log.Fatal("failed to config CHOWN trace", zap.Error(err))
+		log.Panic("failed to config CHOWN trace", zap.Error(err))
 	}
 
 	if err := configSyncTrace(m); err != nil {
-		log.Fatal("failed to config SYNC trace", zap.Error(err))
+		log.Panic("failed to config SYNC trace", zap.Error(err))
 	}
 
 	if err := configSyncFSTrace(m); err != nil {
-		log.Fatal("failed to config SYNCFS trace", zap.Error(err))
+		log.Panic("failed to config SYNCFS trace", zap.Error(err))
 	}
 
 	if err := configFSyncTrace(m); err != nil {
-		log.Fatal("failed to config FSYNC trace", zap.Error(err))
+		log.Panic("failed to config FSYNC trace", zap.Error(err))
 	}
 
 	if err := configTruncateTrace(m); err != nil {
-		log.Fatal("failed to config TRUNCATE trace", zap.Error(err))
+		log.Panic("failed to config TRUNCATE trace", zap.Error(err))
 	}
 
 	if err := configLinkTrace(m); err != nil {
-		log.Fatal("failed to config LINK trace", zap.Error(err))
+		log.Panic("failed to config LINK trace", zap.Error(err))
 	}
 
 	if err := configSymLinkTrace(m); err != nil {
-		log.Fatal("failed to config SYMLINK trace", zap.Error(err))
+		log.Panic("failed to config SYMLINK trace", zap.Error(err))
 	}
 
 	table := bcc.NewTable(m.TableId("events"), m)
 
 	perfMap, err := bcc.InitPerfMap(table, receiverChan, nil)
 	if err != nil {
-		log.Fatal("Failed to init perf map", zap.Error(err))
+		log.Panic("Failed to init perf map", zap.Error(err))
 	}
 
 	return perfMap
@@ -965,24 +965,24 @@ func generateInclMntPaths(inclMntPaths []string) string {
 
 func generateSource(config *Config) string {
 	if err := validateExclComms(config.ExclComms); err != nil {
-		log.Fatal("illegal excl-comms parameter", zap.Error(err))
+		log.Panic("illegal excl-comms parameter", zap.Error(err))
 	}
 	exclCommsCode := generateExclCommsCode(config.ExclComms)
 
 	inclModesCode := generateInclModesCode(config.InclFModes)
 
 	if err := validateInclFullNames(config.InclFullNames); err != nil {
-		log.Fatal("illegal incl-fullname parameter", zap.Error(err))
+		log.Panic("illegal incl-fullname parameter", zap.Error(err))
 	}
 	inclFullNamesCode := generateInclFullNames(config.InclFullNames)
 
 	if err := validateInclExts(config.InclExts); err != nil {
-		log.Fatal("illegal incl-ext parameter", zap.Error(err))
+		log.Panic("illegal incl-ext parameter", zap.Error(err))
 	}
 	inclExtsCode := generateInclExts(config.InclExts)
 
 	if err := validateInclMntPaths(config.InclMntPaths); err != nil {
-		log.Fatal("illegal incl-mntpath parameter", zap.Error(err))
+		log.Panic("illegal incl-mntpath parameter", zap.Error(err))
 	}
 	inclMntPathsCode := generateInclMntPaths(config.InclMntPaths)
 

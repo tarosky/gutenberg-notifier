@@ -100,7 +100,7 @@ func main() {
 		}
 
 		if err := cfg.SetModesFromString(c.StringSlice("incl-fmode")); err != nil {
-			log.Fatal("illegal incl-fmode parameter", zap.Error(err))
+			log.Panic("illegal incl-fmode parameter", zap.Error(err))
 		}
 
 		eventCh := make(chan *notify.Event)
@@ -128,6 +128,6 @@ func main() {
 
 	err := app.Run(os.Args)
 	if err != nil {
-		log.Fatal("failed to run app", zap.Error(err))
+		log.Panic("failed to run app", zap.Error(err))
 	}
 }
