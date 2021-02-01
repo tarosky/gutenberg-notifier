@@ -986,21 +986,16 @@ func generateSource(config *Config) string {
 	}
 	inclMntPathsCode := generateInclMntPaths(config.InclMntPaths)
 
-	return strings.Replace(
-		strings.Replace(
-			strings.Replace(
-				strings.Replace(
-					strings.Replace(
-						strings.Replace(
-							strings.Replace(
-								source,
-								"/*EXCL_COMMS*/", exclCommsCode, -1),
-							"/*INCL_MODES*/", inclModesCode, -1),
-						"/*INCL_FULLNAMES*/", inclFullNamesCode, -1),
-					"/*INCL_EXTS*/", inclExtsCode, -1),
-				"/*INCL_MNTPATHS*/", inclMntPathsCode, -1),
-			"/*MAX_MNT_DEPTH*/", strconv.Itoa(config.MaxMntDepth), -1),
-		"/*MAX_DIR_DEPTH*/", strconv.Itoa(config.MaxDirDepth), -1)
+	r := strings.NewReplacer(
+		"/*EXCL_COMMS*/", exclCommsCode,
+		"/*INCL_MODES*/", inclModesCode,
+		"/*INCL_FULLNAMES*/", inclFullNamesCode,
+		"/*INCL_EXTS*/", inclExtsCode,
+		"/*INCL_MNTPATHS*/", inclMntPathsCode,
+		"/*MAX_MNT_DEPTH*/", strconv.Itoa(config.MaxMntDepth),
+		"/*MAX_DIR_DEPTH*/", strconv.Itoa(config.MaxDirDepth))
+
+	return r.Replace(source)
 }
 
 // Event tells the details of notification.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/tarosky/gutenberg-notifier/notify"
 	"github.com/urfave/cli/v2"
@@ -106,10 +107,11 @@ func main() {
 		eventCh := make(chan *notify.Event)
 		ctx, cancel := context.WithCancel(context.Background())
 
-		sig := make(chan os.Signal)
-		signal.Notify(sig, os.Interrupt, os.Kill)
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGQUIT)
 		go func() {
 			<-sig
+			signal.Stop(sig)
 			cancel()
 		}()
 
