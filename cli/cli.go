@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/tarosky/gutenberg-notifier/notify"
 	"github.com/urfave/cli/v2"
@@ -52,6 +53,12 @@ func main() {
 			Usage:   "File with specified extension to be included. Include leading dot.",
 		},
 		&cli.StringSliceFlag{
+			Name:    "incl-pathprefix",
+			Aliases: []string{"ip"},
+			Value:   &cli.StringSlice{},
+			Usage:   "File with specified path prefix from the mount point to be included. Never include leading slash.",
+		},
+		&cli.StringSliceFlag{
 			Name:    "incl-mntpath",
 			Aliases: []string{"ir"},
 			Value:   &cli.StringSlice{},
@@ -88,15 +95,16 @@ func main() {
 		defer log.Sync()
 
 		cfg := &notify.Config{
-			ExclComms:     c.StringSlice("excl-comm"),
-			InclFullNames: c.StringSlice("incl-fullname"),
-			InclExts:      c.StringSlice("incl-ext"),
-			InclMntPaths:  c.StringSlice("incl-mntpath"),
-			MaxMntDepth:   c.Int("max-mnt-depth"),
-			MaxDirDepth:   c.Int("max-dir-depth"),
-			BpfDebug:      c.Uint("debug"),
-			Quit:          c.Bool("quit"),
-			Log:           log,
+			ExclComms:        c.StringSlice("excl-comm"),
+			InclFullNames:    c.StringSlice("incl-fullname"),
+			InclPathPrefixes: c.StringSlice("incl-pathprefix"),
+			InclExts:         c.StringSlice("incl-ext"),
+			InclMntPaths:     c.StringSlice("incl-mntpath"),
+			MaxMntDepth:      c.Int("max-mnt-depth"),
+			MaxDirDepth:      c.Int("max-dir-depth"),
+			BpfDebug:         c.Uint("debug"),
+			Quit:             c.Bool("quit"),
+			Log:              log,
 		}
 
 		if err := cfg.SetModesFromString(c.StringSlice("incl-fmode")); err != nil {
@@ -106,10 +114,11 @@ func main() {
 		eventCh := make(chan *notify.Event)
 		ctx, cancel := context.WithCancel(context.Background())
 
-		sig := make(chan os.Signal)
-		signal.Notify(sig, os.Interrupt, os.Kill)
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, os.Kill, syscall.SIGTERM, syscall.SIGQUIT)
 		go func() {
 			<-sig
+			signal.Stop(sig)
 			cancel()
 		}()
 

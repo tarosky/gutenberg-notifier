@@ -135,6 +135,35 @@ static int is_incl_fullname(const char *name) {
   return 0;
 }
 
+// return values:
+//   0: candidates provided but not found
+//   1: found or no candidates and hence not found
+static int is_incl_pathprefix(const char *path) {
+  const char *incl_pathprefixes[] = {
+      /*INCL_PATHPREFIXES*/
+  };
+  int count = (int)(sizeof(incl_pathprefixes) / sizeof(*incl_pathprefixes));
+
+  if (count == 0) {
+    return -1;
+  }
+
+#pragma unroll
+  for (int i = 0; i < count; i++) {
+    int len = strlen(incl_pathprefixes[i]); // Never include null terminator
+
+    if (!is_equal8(incl_pathprefixes[i], path, len / 8)) {
+      continue;
+    }
+
+    if (is_equal1(&incl_pathprefixes[i][8 * (len / 8)], &path[8 * (len / 8)], len % 8)) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
 static int is_incl_ext_sub(const char *name, int name_len, const char *incl_ext,
                            int ext_len) {
   if (name_len < ext_len) {
@@ -534,6 +563,9 @@ int enter___notify_change(struct pt_regs *ctx, struct dentry *dentry, struct iat
     // Copy full path
     //
     copy_file_path(data->path, dentry, *mnt_addr);
+    if (!is_incl_pathprefix(data->path)) {
+      return 0;
+    }
 
     if (!update_rally(ptg_id, 0x4)) {
       return 0;
@@ -594,6 +626,9 @@ int enter___filp_close(struct pt_regs *ctx, struct file *filp, fl_owner_t id) {
   // Copy full path
   //
   copy_file_path_from_path(data->path, &filp->f_path);
+  if (!is_incl_pathprefix(data->path)) {
+    return 0;
+  }
 
   // Copy pid
   //
@@ -702,6 +737,9 @@ int enter___vfs_unlink(struct pt_regs *ctx, struct inode *dir, struct dentry *de
   // Copy full path
   //
   copy_file_path(data->path, dentry, *mnt_addr);
+  if (!is_incl_pathprefix(data->path)) {
+    return 0;
+  }
 
   if (!update_rally(ptg_id, 0x4)) {
     return 0;
@@ -853,6 +891,9 @@ int enter___vfs_rename(struct pt_regs *ctx, struct inode *old_dir,
   //
   copy_file_path(data_src->path, old_dentry, *mnt_addr);
   copy_file_path(data_dest->path, new_dentry, *mnt_addr);
+  if (!is_incl_pathprefix(data_src->path) && !is_incl_pathprefix(data_dest->path)) {
+    return 0;
+  }
 
   if (!update_rally(ptg_id, 0x8)) {
     return 0;
@@ -1294,6 +1335,9 @@ int enter___vfs_fsync_range(struct pt_regs *ctx, struct file *file, loff_t start
   // Copy full path
   //
   copy_file_path_from_path(data->path, &file->f_path);
+  if (!is_incl_pathprefix(data->path)) {
+    return 0;
+  }
 
   if (!update_rally(ptg_id, 0x2)) {
     return 0;
@@ -1404,6 +1448,9 @@ int enter___vfs_truncate(struct pt_regs *ctx, const struct path *path, loff_t le
   // Copy full path
   //
   copy_file_path_from_path(data->path, path);
+  if (!is_incl_pathprefix(data->path)) {
+    return 0;
+  }
 
   if (!update_rally(ptg_id, 0x2)) {
     return 0;
@@ -1521,6 +1568,9 @@ int enter___vfs_link(struct pt_regs *ctx, struct dentry *old_dentry, struct inod
   // Copy full path
   //
   copy_file_path(data->path, new_dentry, *mnt_addr);
+  if (!is_incl_pathprefix(data->path)) {
+    return 0;
+  }
 
   if (!update_rally(ptg_id, 0x4)) {
     return 0;
@@ -1647,6 +1697,9 @@ int enter___vfs_symlink(struct pt_regs *ctx, struct inode *dir, struct dentry *d
   // Copy full path
   //
   copy_file_path(data->path, dentry, *mnt_addr);
+  if (!is_incl_pathprefix(data->path)) {
+    return 0;
+  }
 
   if (!update_rally(ptg_id, 0x4)) {
     return 0;
