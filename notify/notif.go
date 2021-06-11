@@ -34,16 +34,17 @@ const (
 
 // Config configures parameters to filter what to be notified.
 type Config struct {
-	ExclComms     []string
-	InclFModes    FMode
-	InclFullNames []string
-	InclExts      []string
-	InclMntPaths  []string
-	MaxMntDepth   int
-	MaxDirDepth   int
-	BpfDebug      uint
-	Quit          bool
-	Log           *zap.Logger
+	ExclComms        []string
+	InclFModes       FMode
+	InclPathPrefixes []string
+	InclFullNames    []string
+	InclExts         []string
+	InclMntPaths     []string
+	MaxMntDepth      int
+	MaxDirDepth      int
+	BpfDebug         uint
+	Quit             bool
+	Log              *zap.Logger
 }
 
 // SetModesFromString sets InclFModes field using string representation.
@@ -905,6 +906,41 @@ func generateInclFullNames(inclFullNames []string) string {
 	return strings.Join(strs, ",\n")
 }
 
+func validateInclPathPrefixes(inclPathPrefixes []string) error {
+	for _, s := range inclPathPrefixes {
+		if !isASCII(s) {
+			return fmt.Errorf("contains non-ASCII characters: %s", s)
+		}
+
+		if len(s) < 1 {
+			return fmt.Errorf("minimum length is 1: too short: %s", s)
+		}
+
+		if cPathMax < len(s) {
+			return fmt.Errorf("maximum length is %d: too long: %s", cPathMax, s)
+		}
+	}
+
+	return nil
+}
+
+func generateInclPathPrefixes(inclPathPrefixes []string) string {
+	strs := make([]string, 0, len(inclPathPrefixes))
+	for _, pr := range inclPathPrefixes {
+		s := bytes.NewBufferString("\"")
+		s.WriteString("\\x")
+		s.WriteString(hex.EncodeToString([]byte("/")))
+		for _, c := range []byte(pr) {
+			s.WriteString("\\x")
+			s.WriteString(hex.EncodeToString([]byte{c}))
+		}
+		s.WriteString("\"")
+		strs = append(strs, s.String())
+	}
+
+	return strings.Join(strs, ",\n")
+}
+
 func validateInclExts(inclExts []string) error {
 	for _, s := range inclExts {
 		if !isASCII(s) {
@@ -976,6 +1012,11 @@ func generateSource(config *Config) string {
 	}
 	inclFullNamesCode := generateInclFullNames(config.InclFullNames)
 
+	if err := validateInclPathPrefixes(config.InclPathPrefixes); err != nil {
+		log.Panic("illegal incl-pathprefix parameter", zap.Error(err))
+	}
+	inclPathPrefixesCode := generateInclPathPrefixes(config.InclPathPrefixes)
+
 	if err := validateInclExts(config.InclExts); err != nil {
 		log.Panic("illegal incl-ext parameter", zap.Error(err))
 	}
@@ -990,6 +1031,7 @@ func generateSource(config *Config) string {
 		"/*EXCL_COMMS*/", exclCommsCode,
 		"/*INCL_MODES*/", inclModesCode,
 		"/*INCL_FULLNAMES*/", inclFullNamesCode,
+		"/*INCL_PATHPREFIXES*/", inclPathPrefixesCode,
 		"/*INCL_EXTS*/", inclExtsCode,
 		"/*INCL_MNTPATHS*/", inclMntPathsCode,
 		"/*MAX_MNT_DEPTH*/", strconv.Itoa(config.MaxMntDepth),
@@ -1066,6 +1108,7 @@ func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
 					zap.Uint32("pid", pid),
 					zap.String("path", absPath),
 					zap.String("mntpath", mntPath),
+					zap.String("pathfrommount", strings.TrimPrefix(path, "/")),
 					zap.String("comm", comm),
 					zap.String("mode", fModeToString(fMode)),
 					zap.String("name", name),
