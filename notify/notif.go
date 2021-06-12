@@ -1042,13 +1042,13 @@ func generateSource(config *Config) string {
 
 // Event tells the details of notification.
 type Event struct {
-	EvtType EventType
-	Pid     uint32
-	Comm    string
-	MntPath string
-	Path    string
-	Name    string
-	FMode   FMode
+	EvtType       EventType
+	Pid           uint32
+	Comm          string
+	MntPath       string
+	PathFromMount string
+	Name          string
+	FMode         FMode
 }
 
 func absolutePath(path, mntPath string) string {
@@ -1101,6 +1101,7 @@ func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
 				fMode := FMode(cEvent.FMode)
 
 				absPath := absolutePath(path, mntPath)
+				pathFromMount := strings.TrimPrefix(path, "/")
 
 				log.Debug(
 					"event",
@@ -1108,7 +1109,7 @@ func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
 					zap.Uint32("pid", pid),
 					zap.String("path", absPath),
 					zap.String("mntpath", mntPath),
-					zap.String("pathfrommount", strings.TrimPrefix(path, "/")),
+					zap.String("pathfrommount", pathFromMount),
 					zap.String("comm", comm),
 					zap.String("mode", fModeToString(fMode)),
 					zap.String("name", name),
@@ -1116,12 +1117,13 @@ func Run(ctx context.Context, config *Config, eventCh chan<- *Event) {
 				)
 
 				eventCh <- &Event{
-					EvtType: evtType.val,
-					Comm:    comm,
-					FMode:   fMode,
-					MntPath: mntPath,
-					Name:    name,
-					Pid:     pid,
+					EvtType:       evtType.val,
+					Comm:          comm,
+					FMode:         fMode,
+					MntPath:       mntPath,
+					PathFromMount: pathFromMount,
+					Name:          name,
+					Pid:           pid,
 				}
 			}
 		}
