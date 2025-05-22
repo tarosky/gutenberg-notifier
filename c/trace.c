@@ -259,7 +259,7 @@ static __always_inline struct data_t *get_data2(u64 evttype) {
 }
 
 static __always_inline struct mount *enclosing_mount(struct vfsmount *mnt) {
-  return (struct mount *)((void *)mnt - ((size_t) & ((struct mount *)0)->mnt));
+  return (struct mount *)((void *)mnt - ((size_t)&((struct mount *)0)->mnt));
 }
 
 static __always_inline int mnt_has_parent(struct mount *mnt) {
@@ -536,10 +536,12 @@ int enter___mnt_want_write(struct pt_regs *ctx, struct vfsmount *m) {
 }
 
 // Kprobe:
-// int notify_change(struct dentry * dentry, struct iattr * attr, struct inode
+// int notify_change(struct user_namespace *mnt_userns, struct dentry * dentry, struct
+// iattr * attr, struct inode
 // **delegated_inode);
 //
-int enter___notify_change(struct pt_regs *ctx, struct dentry *dentry, struct iattr *attr,
+int enter___notify_change(struct pt_regs *ctx, struct user_namespace *mnt_userns,
+                          struct dentry *dentry, struct iattr *attr,
                           struct inode **delegated_inode) {
   u64 ptg_id = bpf_get_current_pid_tgid();
   struct data_t *data = evt_syscall.lookup(&ptg_id);
@@ -711,10 +713,12 @@ int enter___syscall___unlinkat(struct pt_regs *ctx, int dfd, const char __user *
 }
 
 // Kprobe:
-// int vfs_unlink(struct inode *dir, struct dentry *dentry, struct inode
+// int vfs_unlink(struct user_namespace *mnt_userns, struct inode *dir, struct dentry
+// *dentry, struct inode
 // **delegated_inode);
 //
-int enter___vfs_unlink(struct pt_regs *ctx, struct inode *dir, struct dentry *dentry,
+int enter___vfs_unlink(struct pt_regs *ctx, struct user_namespace *mnt_userns,
+                       struct inode *dir, struct dentry *dentry,
                        struct inode **delegated_inode) {
   u64 ptg_id = bpf_get_current_pid_tgid();
   struct data_t *data = evt_syscall.lookup(&ptg_id);
@@ -855,13 +859,9 @@ int enter___syscall___renameat2(struct pt_regs *ctx, int olddfd,
 }
 
 // Kprobe:
-// int vfs_rename(struct inode *old_dir, struct dentry *old_dentry, struct inode *new_dir,
-// struct dentry *new_dentry, struct inode **delegated_inode, unsigned int flags)
+// int vfs_rename(struct renamedata *rd)
 //
-int enter___vfs_rename(struct pt_regs *ctx, struct inode *old_dir,
-                       struct dentry *old_dentry, struct inode *new_dir,
-                       struct dentry *new_dentry, struct inode **delegated_inode,
-                       unsigned int flags) {
+int enter___vfs_rename(struct pt_regs *ctx, struct renamedata *rd) {
   u64 ptg_id = bpf_get_current_pid_tgid();
   struct data_t *data_src = evt_syscall.lookup(&ptg_id);
   struct data_t *data_dest = evt_rename_dest.lookup(&ptg_id);
@@ -871,12 +871,12 @@ int enter___vfs_rename(struct pt_regs *ctx, struct inode *old_dir,
 
   // Copy file name
   //
-  if (is_directory(old_dentry)) {
-    copy_file_name(data_src->name, old_dentry);
-    copy_file_name(data_dest->name, new_dentry);
+  if (is_directory(rd->old_dentry)) {
+    copy_file_name(data_src->name, rd->old_dentry);
+    copy_file_name(data_dest->name, rd->new_dentry);
   } else {
-    copy_file_name(data_src->name, old_dentry);
-    copy_file_name(data_dest->name, new_dentry);
+    copy_file_name(data_src->name, rd->old_dentry);
+    copy_file_name(data_dest->name, rd->new_dentry);
     if (!is_incl_name(data_src->name) && !is_incl_name(data_dest->name)) {
       return 0;
     }
@@ -889,8 +889,8 @@ int enter___vfs_rename(struct pt_regs *ctx, struct inode *old_dir,
 
   // Copy full path
   //
-  copy_file_path(data_src->path, old_dentry, *mnt_addr);
-  copy_file_path(data_dest->path, new_dentry, *mnt_addr);
+  copy_file_path(data_src->path, rd->old_dentry, *mnt_addr);
+  copy_file_path(data_dest->path, rd->new_dentry, *mnt_addr);
   if (!is_incl_pathprefix(data_src->path) && !is_incl_pathprefix(data_dest->path)) {
     return 0;
   }
@@ -1542,10 +1542,11 @@ int enter___syscall___linkat(struct pt_regs *ctx, int olddfd, const char __user 
 }
 
 // Kprobe:
-// int vfs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *new_dentry,
-// struct inode **delegated_inode);
+// int vfs_link(struct dentry *old_dentry, struct user_namespace *mnt_userns, struct inode
+// *dir, struct dentry *new_dentry, struct inode **delegated_inode);
 //
-int enter___vfs_link(struct pt_regs *ctx, struct dentry *old_dentry, struct inode *dir,
+int enter___vfs_link(struct pt_regs *ctx, struct dentry *old_dentry,
+                     struct user_namespace *mnt_userns, struct inode *dir,
                      struct dentry *new_dentry, struct inode **delegated_inode) {
   u64 ptg_id = bpf_get_current_pid_tgid();
   struct data_t *data = evt_syscall.lookup(&ptg_id);
@@ -1673,10 +1674,11 @@ int enter___syscall___symlinkat(struct pt_regs *ctx, int olddfd,
 }
 
 // Kprobe:
-// int vfs_symlink(struct inode *dir, struct dentry *dentry, const char *oldname);
+// int vfs_symlink(struct user_namespace *mnt_userns, struct inode *dir, struct dentry
+// *dentry, const char *oldname);
 //
-int enter___vfs_symlink(struct pt_regs *ctx, struct inode *dir, struct dentry *dentry,
-                        const char *oldname) {
+int enter___vfs_symlink(struct pt_regs *ctx, struct user_namespace *mnt_userns,
+                        struct inode *dir, struct dentry *dentry, const char *oldname) {
   u64 ptg_id = bpf_get_current_pid_tgid();
   struct data_t *data = evt_syscall.lookup(&ptg_id);
   if (data == NULL || data->evttype != GNEVT_SYMLINK) {
