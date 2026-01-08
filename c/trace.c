@@ -259,7 +259,7 @@ static __always_inline struct data_t *get_data2(u64 evttype) {
 }
 
 static __always_inline struct mount *enclosing_mount(struct vfsmount *mnt) {
-  return (struct mount *)((void *)mnt - ((size_t)&((struct mount *)0)->mnt));
+  return (struct mount *)((void *)mnt - ((size_t) & ((struct mount *)0)->mnt));
 }
 
 static __always_inline int mnt_has_parent(struct mount *mnt) {
@@ -287,27 +287,30 @@ static __always_inline void store_mnt_dentry_addr(u64 ptg_id, struct vfsmount *m
  * This works only if PATH_MAX is power of 2.
  */
 static __always_inline void copy_mount_path(char *mnt_path, struct vfsmount *mnt) {
-  struct mount *mnt_start = enclosing_mount(mnt);
+  struct mount *mount = enclosing_mount(mnt);
 
   u32 pos = 0;
 
+  // For the correct implementation, please refer to d_path() in Linux kernel.
   {
-    struct mount *mnt = mnt_start;
-    struct dentry *d = mnt->mnt_mountpoint;
+    struct mount *m = mount;
+    struct dentry *d = mount->mnt_mountpoint;
 #pragma unroll
     for (int i = 0; i < MAX_MNT_DEPTH; i++) {
-      if (is_root(d)) {
-        if (mnt_has_parent(mnt)) {
-          mnt = mnt->mnt_parent;
-          d = mnt->mnt_mountpoint->d_parent;
-          continue;
+      if (d == m->mnt_parent->mnt.mnt_root) {
+        if (d == d->d_parent) {
+          break;
         }
-        break;
+
+        m = m->mnt_parent;
+        d = m->mnt_mountpoint;
+        continue;
       }
 
       u32 len;
       bpf_probe_read_kernel(&len, sizeof(u32), &d->d_name.len);
       pos += len + 1; // Add separator
+
       d = d->d_parent;
     }
   }
@@ -321,17 +324,18 @@ static __always_inline void copy_mount_path(char *mnt_path, struct vfsmount *mnt
 
     mnt_path[pos & (PATH_MAX - 1)] = '\0';
 
-    struct mount *mnt = mnt_start;
-    struct dentry *d = mnt->mnt_mountpoint;
+    struct mount *m = mount;
+    struct dentry *d = mount->mnt_mountpoint;
 #pragma unroll
     for (int i = 0; i < MAX_MNT_DEPTH; i++) {
-      if (is_root(d)) {
-        if (mnt_has_parent(mnt)) {
-          mnt = mnt->mnt_parent;
-          d = mnt->mnt_mountpoint->d_parent;
-          continue;
+      if (d == m->mnt_parent->mnt.mnt_root) {
+        if (d == d->d_parent) {
+          break;
         }
-        break;
+
+        m = m->mnt_parent;
+        d = m->mnt_mountpoint;
+        continue;
       }
 
       u32 len;

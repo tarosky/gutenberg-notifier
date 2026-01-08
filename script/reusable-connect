@@ -1,0 +1,3 @@
+#!/bin/bash -eu
+
+exec ssh -M -o ControlPath=work/ssh:%C "$(< config/development_rsync_destination)" sleep infinity
