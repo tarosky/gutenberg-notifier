@@ -1,0 +1,5 @@
+#!/bin/bash -eux
+
+go build -o work/notifier cli/cli.go
+
+exec rsync -v -e "ssh -o 'ControlPath=work/ssh:%C'" work/notifier "$(< config/development_rsync_destination):"
