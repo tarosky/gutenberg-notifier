@@ -64,6 +64,12 @@ func main() {
 			Value:   &cli.StringSlice{},
 			Usage:   "Full path to the mount point where the file is located. Never include trailing slash.",
 		},
+		&cli.StringSliceFlag{
+			Name:    "incl-mntpathprefix",
+			Aliases: []string{"iq"},
+			Value:   &cli.StringSlice{},
+			Usage:   "Full path to the mount point where the file is located. Never include trailing slash.",
+		},
 		&cli.IntFlag{
 			Name:    "max-mnt-depth",
 			Aliases: []string{"md"},
@@ -95,16 +101,17 @@ func main() {
 		defer log.Sync()
 
 		cfg := &notify.Config{
-			ExclComms:        c.StringSlice("excl-comm"),
-			InclFullNames:    c.StringSlice("incl-fullname"),
-			InclPathPrefixes: c.StringSlice("incl-pathprefix"),
-			InclExts:         c.StringSlice("incl-ext"),
-			InclMntPaths:     c.StringSlice("incl-mntpath"),
-			MaxMntDepth:      c.Int("max-mnt-depth"),
-			MaxDirDepth:      c.Int("max-dir-depth"),
-			BpfDebug:         c.Uint("debug"),
-			Quit:             c.Bool("quit"),
-			Log:              log,
+			ExclComms:           c.StringSlice("excl-comm"),
+			InclFullNames:       c.StringSlice("incl-fullname"),
+			InclPathPrefixes:    c.StringSlice("incl-pathprefix"),
+			InclExts:            c.StringSlice("incl-ext"),
+			InclMntPaths:        c.StringSlice("incl-mntpath"),
+			InclMntPathPrefixes: c.StringSlice("incl-mntpathprefix"),
+			MaxMntDepth:         c.Int("max-mnt-depth"),
+			MaxDirDepth:         c.Int("max-dir-depth"),
+			BpfDebug:            c.Uint("debug"),
+			Quit:                c.Bool("quit"),
+			Log:                 log,
 		}
 
 		if err := cfg.SetModesFromString(c.StringSlice("incl-fmode")); err != nil {

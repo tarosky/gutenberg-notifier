@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"strconv"
 	"strings"
 	"unicode"
@@ -34,17 +34,18 @@ const (
 
 // Config configures parameters to filter what to be notified.
 type Config struct {
-	ExclComms        []string
-	InclFModes       FMode
-	InclPathPrefixes []string
-	InclFullNames    []string
-	InclExts         []string
-	InclMntPaths     []string
-	MaxMntDepth      int
-	MaxDirDepth      int
-	BpfDebug         uint
-	Quit             bool
-	Log              *zap.Logger
+	ExclComms           []string
+	InclFModes          FMode
+	InclPathPrefixes    []string
+	InclFullNames       []string
+	InclExts            []string
+	InclMntPaths        []string
+	InclMntPathPrefixes []string
+	MaxMntDepth         int
+	MaxDirDepth         int
+	BpfDebug            uint
+	Quit                bool
+	Log                 *zap.Logger
 }
 
 // SetModesFromString sets InclFModes field using string representation.
@@ -76,7 +77,7 @@ func unpackSource(name string) string {
 	}
 	defer r.Close()
 
-	contents, err := ioutil.ReadAll(r)
+	contents, err := io.ReadAll(r)
 	if err != nil {
 		log.Panic("failed to read embedded file", zap.Error(err))
 	}
@@ -999,6 +1000,35 @@ func generateInclMntPaths(inclMntPaths []string) string {
 	return strings.Join(strs, ",\n")
 }
 
+func validateInclMntPathPrefixes(inclMntPathPrefixes []string) error {
+	for _, s := range inclMntPathPrefixes {
+		if !isASCII(s) {
+			return fmt.Errorf("contains non-ASCII characters: %s", s)
+		}
+
+		if cPathMax-1 < len(s) {
+			return fmt.Errorf("maximum length is %d: too long: %s", cPathMax-1, s)
+		}
+	}
+
+	return nil
+}
+
+func generateInclMntPathPrefixes(inclMntPathPrefixes []string) string {
+	strs := make([]string, 0, len(inclMntPathPrefixes))
+	for _, path := range inclMntPathPrefixes {
+		s := bytes.NewBufferString("\"")
+		for _, c := range []byte(path) {
+			s.WriteString("\\x")
+			s.WriteString(hex.EncodeToString([]byte{c}))
+		}
+		s.WriteString("\"")
+		strs = append(strs, s.String())
+	}
+
+	return strings.Join(strs, ",\n")
+}
+
 func generateSource(config *Config) string {
 	if err := validateExclComms(config.ExclComms); err != nil {
 		log.Panic("illegal excl-comms parameter", zap.Error(err))
@@ -1027,6 +1057,11 @@ func generateSource(config *Config) string {
 	}
 	inclMntPathsCode := generateInclMntPaths(config.InclMntPaths)
 
+	if err := validateInclMntPathPrefixes(config.InclMntPathPrefixes); err != nil {
+		log.Panic("illegal incl-mntpathprefix parameter", zap.Error(err))
+	}
+	inclMntPathPrefixesCode := generateInclMntPathPrefixes(config.InclMntPathPrefixes)
+
 	r := strings.NewReplacer(
 		"/*EXCL_COMMS*/", exclCommsCode,
 		"/*INCL_MODES*/", inclModesCode,
@@ -1034,6 +1069,7 @@ func generateSource(config *Config) string {
 		"/*INCL_PATHPREFIXES*/", inclPathPrefixesCode,
 		"/*INCL_EXTS*/", inclExtsCode,
 		"/*INCL_MNTPATHS*/", inclMntPathsCode,
+		"/*INCL_MNTPATHPREFIXES*/", inclMntPathPrefixesCode,
 		"/*MAX_MNT_DEPTH*/", strconv.Itoa(config.MaxMntDepth),
 		"/*MAX_DIR_DEPTH*/", strconv.Itoa(config.MaxDirDepth))
 
