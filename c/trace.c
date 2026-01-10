@@ -426,7 +426,7 @@ static int is_incl_mntpath(const char *mnt_path) {
   int count = (int)(sizeof(incl_mntpaths) / sizeof(*incl_mntpaths));
 
   if (count == 0) {
-    return 1;
+    return -1;
   }
 
 #pragma unroll
@@ -438,6 +438,33 @@ static int is_incl_mntpath(const char *mnt_path) {
     }
 
     if (is_equal1(&incl_mntpaths[i][8 * (len / 8)], &mnt_path[8 * (len / 8)], len % 8)) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static int is_incl_mntpathprefix(const char *mnt_path) {
+  const char *incl_mntpathprefixes[] = {
+      /*INCL_MNTPATHPREFIXES*/
+  };
+  int count = (int)(sizeof(incl_mntpathprefixes) / sizeof(*incl_mntpathprefixes));
+
+  if (count == 0) {
+    return -1;
+  }
+
+#pragma unroll
+  for (int i = 0; i < count; i++) {
+    int len = strlen(incl_mntpathprefixes[i]); // Never include null terminator
+
+    if (!is_equal8(incl_mntpathprefixes[i], mnt_path, len / 8)) {
+      continue;
+    }
+
+    if (is_equal1(&incl_mntpathprefixes[i][8 * (len / 8)], &mnt_path[8 * (len / 8)],
+                  len % 8)) {
       return 1;
     }
   }
@@ -485,6 +512,22 @@ static __always_inline void copy_file_path_from_path(char *path,
   copy_file_path(path, f_path->dentry, mnt_addr);
 }
 
+static int is_incl_mnt(const char *mntpath) {
+  int pathres = is_incl_mntpath(mntpath);
+
+  if (pathres == 1) {
+    return 1;
+  }
+
+  int prefixres = is_incl_mntpathprefix(mntpath);
+
+  if (prefixres == 1) {
+    return 1;
+  }
+
+  return pathres == -1 && prefixres == -1;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // Common Functions
@@ -512,7 +555,7 @@ int enter___mnt_want_write(struct pt_regs *ctx, struct vfsmount *m) {
     // Copy full path to the mount point
     //
     copy_mount_path(data->mntpath, m);
-    if (!is_incl_mntpath(data->mntpath)) {
+    if (!is_incl_mnt(data->mntpath)) {
       return 0;
     }
 
@@ -625,7 +668,7 @@ int enter___filp_close(struct pt_regs *ctx, struct file *filp, fl_owner_t id) {
   // Copy full path of the mount point
   //
   copy_mount_path(data->mntpath, filp->f_path.mnt);
-  if (!is_incl_mntpath(data->mntpath)) {
+  if (!is_incl_mnt(data->mntpath)) {
     return 0;
   }
 
@@ -1332,7 +1375,7 @@ int enter___vfs_fsync_range(struct pt_regs *ctx, struct file *file, loff_t start
   // Copy full path of the mount point
   //
   copy_mount_path(data->mntpath, file->f_path.mnt);
-  if (!is_incl_mntpath(data->mntpath)) {
+  if (!is_incl_mnt(data->mntpath)) {
     return 0;
   }
 
@@ -1445,7 +1488,7 @@ int enter___vfs_truncate(struct pt_regs *ctx, const struct path *path, loff_t le
   // Copy full path to the mount point
   //
   copy_mount_path(data->mntpath, path->mnt);
-  if (!is_incl_mntpath(data->mntpath)) {
+  if (!is_incl_mnt(data->mntpath)) {
     return 0;
   }
 
